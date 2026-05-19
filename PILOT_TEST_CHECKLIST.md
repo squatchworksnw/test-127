@@ -1,145 +1,112 @@
-﻿# Pilot Test Checklist
+(function(){
+  window.FieldOps = window.FieldOps || {};
+  window.FieldOps.Views = window.FieldOps.Views || {};
 
-Use this checklist with real Supabase users before operational use.
+  function getNeedsAttentionToday(state, helpers){
+    const today = helpers.todayString();
+    const activeTasks = helpers.activeItems("tasks");
+    return {
+      urgentTasks: activeTasks.filter(t => ["urgent","high"].includes(t.priority) && t.status !== "complete"),
+      dueToday: activeTasks.filter(t => t.date === today && t.status !== "complete"),
+      activeProjects: helpers.activeItems("projects").filter(p => p.status !== "complete"),
+      openBids: helpers.activeItems("bids").filter(b => !["approved","rejected","paid"].includes(b.status)),
+      blockedTasks: activeTasks.filter(t => ["waiting","blocked"].includes(String(t.status || "").toLowerCase())),
+      fleetAlerts: state.vehicleAlerts || [],
+      reviewCount: helpers.activeItems("submissions").filter(s => s.status === "Needs Review").length
+    };
+  }
 
-Pilot: ___________________________
-Tested by: _______________________
-Date: ____________________________
-Environment / URL: _______________
+  function getCalendarItems(state, helpers){
+    const items = [];
+    helpers.activeItems("tasks").forEach(t => { if(t.date) items.push({date:t.date,title:t.name,type:"Work order",detail:t.workOrderNumber,tone:helpers.tone(t.priority)}); });
+    helpers.activeItems("projects").forEach(p => { if(p.date) items.push({date:p.date,title:p.name,type:"Project target",detail:p.summary,tone:helpers.tone(p.priority)}); });
+    helpers.activeItems("vehicles").forEach(v => {
+      if(v.serviceDate) items.push({date:v.serviceDate,title:`${v.name} service`,type:"Fleet service",detail:v.plate,tone:helpers.tone(v.status)});
+      if(v.registration) items.push({date:v.registration,title:`${v.name} registration`,type:"Fleet registration",detail:v.plate,tone:helpers.tone(v.status)});
+    });
+    return items.sort((a,b) => a.date.localeCompare(b.date));
+  }
 
-## 1. Signed-Out Access
+  function render(state, helpers){
+    const todayState = getNeedsAttentionToday(state, helpers);
+    const calendarItems = getCalendarItems(state, helpers);
+    const activeTasks = helpers.activeItems("tasks");
 
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
+    const greeting = new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 17 ? "Good afternoon" : "Good evening";
+    document.getElementById("dailyGreeting").textContent = `${greeting}${state.settings.userDisplayName ? `, ${state.settings.userDisplayName}` : ""}.`;
+    document.getElementById("dailyRhythmLines").innerHTML = [
+      todayState.reviewCount ? `${todayState.reviewCount} import review item${todayState.reviewCount === 1 ? "" : "s"} waiting.` : "No import reviews waiting.",
+      todayState.dueToday.length ? `${todayState.dueToday.length} work order${todayState.dueToday.length === 1 ? "" : "s"} due today.` : "No work orders due today.",
+      todayState.urgentTasks.length ? `${todayState.urgentTasks.length} urgent/high item${todayState.urgentTasks.length === 1 ? "" : "s"} need attention.` : "No urgent facility failures.",
+      todayState.fleetAlerts.length ? `${todayState.fleetAlerts.length} fleet item${todayState.fleetAlerts.length === 1 ? "" : "s"} to check.` : "Fleet is quiet."
+    ].map(line => `<p>${helpers.esc(line)}</p>`).join("");
 
-- Open the app in a fresh/private browser session.
-- Confirm only the login/welcome screen appears.
-- Confirm no navigation, records, diagnostics, settings, or edit controls are visible.
+    document.getElementById("reviewQueueCount").textContent = `${todayState.reviewCount} waiting`;
+    document.getElementById("workspaceProjectCount").textContent = `${todayState.activeProjects.length} active`;
+    document.getElementById("workspaceMaintenanceCount").textContent = `${todayState.dueToday.length} due today`;
+    document.getElementById("workspaceFleetCount").textContent = `${todayState.fleetAlerts.length} to check`;
+    document.getElementById("workspaceFuelCount").textContent = `${helpers.activeItems("fuelReceipts").length} receipts`;
+    document.getElementById("workspaceBidCount").textContent = `${todayState.openBids.length} open`;
+    document.getElementById("workspaceFileCount").textContent = `${helpers.activeItems("files").length} linked`;
+    document.getElementById("workspaceCalendarCount").textContent = `${calendarItems.length} dated`;
+    document.getElementById("urgentCount").textContent = todayState.urgentTasks.length;
+    document.getElementById("projectCount").textContent = todayState.activeProjects.length;
+    document.getElementById("bidCount").textContent = todayState.openBids.length;
+    const urgentOrBlocked = new Set([...todayState.urgentTasks, ...todayState.blockedTasks].map(item => item.id));
+    const projectVendorFollowup = todayState.activeProjects.length + todayState.openBids.length;
+    const attentionBuckets = [
+      urgentOrBlocked.size,
+      todayState.reviewCount,
+      todayState.dueToday.length,
+      todayState.fleetAlerts.length,
+      projectVendorFollowup
+    ];
+    const quietBuckets = attentionBuckets.filter(count => !count).length;
+    const priorityCounts = {
+      todayReviewCount: todayState.reviewCount,
+      todayUrgentCount: urgentOrBlocked.size,
+      todayBlockedCount: todayState.blockedTasks.length,
+      todayDueCount: todayState.dueToday.length,
+      todayFleetCount: todayState.fleetAlerts.length,
+      todayVendorCount: projectVendorFollowup,
+      todayClearCount: quietBuckets
+    };
+    Object.entries(priorityCounts).forEach(([id, value]) => {
+      const el = document.getElementById(id);
+      if(el) el.textContent = value;
+    });
+    const clearLabel = document.getElementById("todayClearLabel");
+    if(clearLabel) clearLabel.textContent = quietBuckets === attentionBuckets.length ? "No active pressure points" : `${quietBuckets} quiet area${quietBuckets === 1 ? "" : "s"}`;
 
-## 2. Owner Account
+    document.getElementById("urgentList").innerHTML = todayState.urgentTasks.length ? todayState.urgentTasks.slice(0,5).map(t => helpers.workOrderCardWithActions(t)).join("") : helpers.empty("No urgent work orders.");
+    document.getElementById("weekList").innerHTML = activeTasks.length ? activeTasks.slice(0,5).map(t => helpers.workOrderCardWithActions(t)).join("") : helpers.empty("No work orders yet.");
+    document.getElementById("fleetAlertList").innerHTML = todayState.fleetAlerts.length ? todayState.fleetAlerts.slice(0,5).map(helpers.renderVehicleAlertCard).join("") : helpers.empty("No fleet alerts yet.");
+    document.getElementById("activeProjectList").innerHTML = todayState.activeProjects.length ? todayState.activeProjects.slice(0,5).map(helpers.projectCard).join("") : helpers.empty("No active projects yet.");
+    document.getElementById("dashboardBidList").innerHTML = todayState.openBids.length ? todayState.openBids.slice(0,5).map(helpers.bidCard).join("") : helpers.empty("No open bids yet.");
+  }
 
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
+  function renderCalendar(state, helpers){
+    const target = document.getElementById("calendarList");
+    if(!target) return;
+    const items = getCalendarItems(state, helpers);
+    const today = helpers.todayString();
+    const weekEnd = new Date();
+    weekEnd.setDate(weekEnd.getDate() + 7);
+    const weekEndString = weekEnd.toISOString().slice(0,10);
+    document.getElementById("calendarTodayCount").textContent = items.filter(i => i.date === today).length;
+    document.getElementById("calendarWeekCount").textContent = items.filter(i => i.date >= today && i.date <= weekEndString).length;
+    document.getElementById("calendarTotalCount").textContent = items.length;
+    target.innerHTML = items.length ? items.map(i => helpers.card(i.title,[i.detail],[i.type,i.date],i.tone)).join("") : helpers.empty("No dated work yet.");
+  }
 
-- Sign in as Owner.
-- Confirm full command center loads.
-- Confirm Settings and diagnostics are visible.
-- Confirm Work Orders, Review Queue, Projects, Fleet / Mobile Assets, Places + Assets, Support, Oversight are available.
+  window.FieldOps.Views.TodayDashboard = {
+    render,
+    renderCalendar,
+    getCalendarItems,
+    getNeedsAttentionToday
+  };
 
-## 3. Admin Account
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Sign in as Admin.
-- Confirm operations workspace loads.
-- Confirm diagnostics are visible.
-- Confirm Budget and owner-only Places + Assets controls are not available unless intentionally granted by RLS/product policy.
-- Confirm Admin cannot transfer ownership or remove Owner.
-
-## 4. Submitter / Contractor Account
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Sign in as Submitter/Contractor.
-- Confirm simplified portal only.
-- Confirm visible paths are My Home, Submit Request, Upload Document / Photo, Submit Estimate, Submit Materials, My Submissions.
-- Confirm diagnostics, Settings, Budget, Reports, Vendors, Vehicles, Assets, archive controls, and full Work Orders are not visible.
-
-## 5. Submitter Cannot Create Live Work Order
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Attempt to directly navigate to Work Orders.
-- Attempt direct Supabase client insert into `field_ops_work_orders`.
-- Expected: blocked by RLS, not only by frontend.
-
-## 6. Submitter Creates Review Submission
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Submit location, urgency, notes, and optional document/photo.
-- Confirm row appears in `field_ops_import_reviews`.
-- Confirm document metadata appears in `field_ops_documents` if file was included.
-- Confirm row is scoped to the correct `workspace_id`.
-
-## 7. Owner/Admin Approves Review Into Work Order
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Open Review Queue as Owner/Admin.
-- Open submitted item.
-- Correct title, type/category, priority, due date, building/space/asset/vehicle links, and notes.
-- Approve as Work Order.
-- Confirm new row appears in `field_ops_work_orders`.
-- Confirm original review is marked approved with `created_record_table` and `created_record_id`.
-- Confirm linked document/photo remains attached to the Work Order.
-
-## 8. Duplicate Conversion Blocked
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Reopen the approved review item.
-- Attempt to approve again.
-- Expected: no second Work Order is created.
-
-## 9. Archive / Restore
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Archive a Work Order as Owner/Admin.
-- Confirm it disappears from active Work Orders and Today Mode.
-- Confirm `archived_at` and `archived_by` are set.
-- Restore it.
-- Confirm it returns to active views.
-
-## 10. Document Upload Storage Policy
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Upload a document/photo as Submitter.
-- Upload a document/photo as Admin.
-- Confirm each file lands in the expected `documents` bucket path.
-- Confirm unauthorized users cannot read another workspace file.
-
-## 11. Workspace Isolation
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Use a Workspace A account and Workspace B account.
-- Confirm Workspace A cannot read Workspace B records.
-- Confirm direct API queries for another `workspace_id` return no rows / RLS error.
-- Confirm uploads are isolated by workspace path/policy.
-
-## 12. RLS Verification SQL
-
-Account used: ____________________
-Pass / Fail: _____________________
-Notes: ___________________________
-
-- Open Supabase Dashboard.
-- Go to SQL Editor.
-- Run `sql/rls_verification.sql`.
-- Success means every `field_ops_*` base table has RLS enabled, policies exist, and workspace-owned tables have `workspace_id`.
-- Failure means pilot is not ready for real operational data.
-
-
+  globalThis.renderCalendar = function(){
+    window.FieldOps.Views.TodayDashboard.renderCalendar(globalThis.app, globalThis.createViewHelpers());
+  };
+})();
